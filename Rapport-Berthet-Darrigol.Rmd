@@ -1,0 +1,305 @@
+---
+title: "Machine Learning Hackaton"
+subtitle : "Rapport"
+author: "DARRIGOL Tristan - BERTHET Ulysse"
+output:
+  html_document :
+    toc : true
+    toc_depth : 2
+    theme: flatly
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Analyse
+## Librairies
+
+Commencons dans un premier temps pas décrire et détailler les différentes librairies utilisées :
+```{r librairie,eval=FALSE}
+library(caret)
+library(caTools)
+library(doParallel)
+library(mlbench)
+library(xgboost)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+```
+### caTools 
+
+Librairie de manipulation de data, et d'outils statisiques utilisée a de multiples reprises au cours des TD.
+
+### caret 
+
+Une des librairies de Machine Learning les plus complètes disponible sur R, elle contient de nombreux modèles, méthodes de préprocessing, de manipulation de données et de test. Cette librairie hautement personnalisable permet en plus de toute ces fonctionnalités, cette librairie, jointe à doParallel, permet d'entrainer en parallèle plusieurs modèles (multiprocessing).
+
+[Documentation caret](https://topepo.github.io/caret/index.html)
+
+### doParallel 
+
+Librairie permettant l'utilisation séparée de plusieurs coeurs sur la meme machine, ici, 5 coeurs.
+
+### mlbench
+
+Librairie nous permettant de choisir nos modèles en les comparants via la metrics "F1" telle que demandée lors du challenge, en lieu et place d'Accuracy ou Kappa, proposées par caret.
+```{r, include = FALSE}
+library(caret)
+library(caTools)
+library(doParallel)
+library(xgboost)
+library(mlbench)
+cl <- makePSOCKcluster(5)
+registerDoParallel(cl)
+```
+## Data
+
+Passons maintenant à la description des données. Il faut dans un premier temps charger le dataset :
+
+```{r}
+data <- read.csv("data.csv")
+```
+Puis commencons par regarder les premières lignes pour avoir une idée de la forme des données :
+```{r}
+head(data, 3)
+colnames(data)
+```
+
+On notera tout d'abord la grande quantité de variables (20 en dehors de la données à prédire), dont une grande partie de variables qualitatives (9).
+
+De cela, nous tirons deux chose : 
+
+  Il nous faut transformer les variables qualitatives en facteurs de manière à pouvoir appliquer une variété plus large d'algorithmes.  
+  Le choix d'algorthme instinctif est donc la Random Forest, assez peu sensible aux variations de ses paramètres et se comportant bien sur des data set de hautes dimension, encore plus lorsqu'ils comportent   une portion importante de variables qualitatives.
+
+### Transformation en facteurs
+Nous avons pour cela créé une fonction nous permettant de transformer le dataset ou tout subset extrait de ce dernier :
+```{r preProcessing, results='hide'}
+preProcessing=function(data){
+  data$job=as.factor(data$job)
+  data$marital=as.factor(data$marital)
+  data$education=as.factor(data$education)
+  data$default=as.factor(data$default)
+  data$housing=as.factor(data$housing)
+  data$loan=as.factor(data$loan)
+  data$contact=as.factor(data$contact)
+  data$day_of_week=as.factor(data$day_of_week)
+  data$poutcome=as.factor(data$poutcome)
+  data
+}
+
+data <- preProcessing(data)
+data$y=as.factor(data$y)
+data=data[-c(11)]
+```
+
+### Scaling and centering
+
+De plus, nous avons de nomreuses valeures numériques d'échelles très variables, il semble donc nécessaire de scale et center les données, pour cela nous utiliserons la fonction "preProcess" du package caret, cependant certains algorithmes, comme les ensembles d'arbes de décisions, n'y sont pas sensible, nous disposons donc maintenant de deux set, un scale et center et l'autre non.
+
+```{r, results='hide'}
+preProcValues = preProcess(data, method = c("center", "scale"))
+training_set.scaled = predict(preProcValues, data)
+```
+### Spliting the data
+
+Pour nos deux data sets, il est necessaire de split en train set et test set:
+
+```{r Splitting}
+split = sample.split(data$y, SplitRatio = 0.75)
+training_set = subset(data, split == TRUE)
+test_set = subset(data, split == FALSE)
+
+split = sample.split(data$y, SplitRatio = 0.75)
+training_set_scaled = subset(data, split == TRUE)
+test_set_scaled = subset(training_set.scaled, split == FALSE)
+
+
+
+```
+
+# Models
+
+Maintenant que nos données sont prêtes à être utilisées, passons donc à la conception et l'entrainement des modèles :
+
+Les modèles les plus performants dans le cadre de notre problème de classification ont de très fortes chances d'etre, des randoms forests, des GBM, ou bien des SVM.[1]
+Cependant, le temps necessaire à l'entrainement des SVM étant très élevé, nous ecartons donc cette méthode pour le moment, car nous voulons effectuer du tuning de paramètres via une grid search et des cross-validations.
+
+
+De manière à pouvoir effectuer les cross validations, nous allons réutiliser la ligne de commande suivante tout au long du challenge :
+
+```{r}
+trainctrl <- trainControl(verboseIter = TRUE,method = "cv",number = 5,summaryFunction = prSummary,classProbs = TRUE)
+
+metric = "F"
+```
+verboseIter : premet d'afficher un journal des itérations    
+method = "cv", methode de cross validation  
+number = 10 , cross validation à 10 couches (k-fold cross validation)  
+metric = score que nous cherchons à maximiser entre les différents modèles, F1 n'est pas disponible  
+
+## Random Forest
+
+Assez peu sensible au paramétrage, nous performons tout de même à une cross validation, sur 3 valeurs possible pour mtry (nombre de predicteurs sélectionnés aléatoirement)
+```{r Random Forest}
+grid.forest1=expand.grid(mtry=c(2,10,40))
+set.seed(1)
+fit.forest1<- train(y~.,
+                 data=training_set,
+                 method="rf",
+                 metric=metric,
+                 trControl = trainctrl,
+                 tuneGrid=grid.forest1)
+print(fit.forest1)
+print(confusionMatrix(test_set$y,predict(fit.forest1,test_set),mode = "prec_recall")
+)
+
+
+
+```
+
+On notera que le meilleur résultat est pour mtry = 2, on effectue donc un "zoom", et recommencons avec des valeurs autour de 2 :
+
+
+```{r Random Forest2}
+grid.forest2=expand.grid(mtry=c(1,3,5))
+set.seed(1)
+fit.forest2<- train(y~.,
+                 data=training_set,
+                 method="rf",
+                 metric=metric,
+                 trControl = trainctrl,
+                 tuneGrid=grid.forest2)
+print(fit.forest2)
+print(confusionMatrix(test_set$y,predict(fit.forest2,test_set),mode = "prec_recall")
+)
+```
+
+Nous arrêterons notre choix sur la valeur mtry = 3 car c'est la valeur pour laquelle notre modèle semble le plus performant.
+
+
+Nous avons donc soumis les prévisions données par ce modèle sur Kaggle.
+
+
+Malheureusement pour nous, nous avions sous-estimé la taille du dataset et le temps que prendrait le training ainsi que la cross-validation. Nous avions donc lancé plusieurs modèles que nous n'avons pas eu le temps de tester, ces modèles étaient un classique GMB, ou "Gradient Boosting Machine", et un, plus récent, le XGB, ou "Extreme Gradient Boosting". Pour ce faire nous avons donc utilisé les méthodes suivantes :
+
+## XGB
+```{r XGB}
+set.seed(1)
+xgbGrid <- expand.grid(nrounds = c(100,200),  
+                       max_depth = c(3, 10, 15, 20),
+                       colsample_bytree = seq(0.5, 0.9, length.out = 3),
+                       ## valeurs par défaut : 
+                       eta = c(0.1),
+                       gamma=c(0),
+                       min_child_weight = c(1),
+                       subsample = c(1),
+                       rate_drop =c(0),
+                       skip_drop=c(0))
+                       
+)
+fit.Xboost<- train(y~.,
+                  data=training_set,
+                  method="xgbTree",
+                  metric=metric,
+                  trControl = trainctrl,
+                  tuneGrid=xgbGrid)
+print(fit.Xboost)
+print(confusionMatrix(test_set$target,predict(fit.Xboost,test_set),mode = "prec_recall")
+)
+```
+
+nrounds : Nombre d'itération de boosting à effectuer, plus cette valeur est grande plus l'algorithme est long à s'entrainer.  
+max_depth : Profondeur d'arbre maximale, Risque d'overfitting (ou d'underfitting) si cette valeur est trop grande (ou trop petite respectivement).  
+colsample_bytree : Pourcentage des colonnes utilisée pour construire un arbre.  
+
+*valeurs par défaut*  
+eta : Learning Rate lors de la descente de gradient  
+gamma : Minimum de la fonction objectif pour partitionner une feuille.      
+min_child_weight : Somme des poids minimum jusqu'a la feuille pour continuer à partitionner.      
+subsample : Ration d'echantillonage des instance d'entrainement. Si a 0.5, le XGB va echantilloner la moitié du dataset avant de créer les arbres   
+rate_drop : Une partie des arbres précedents à drop pendant le dropout.      
+skip_drop : Probabilité de passer la procédure de "dropout"  pendant une iteration de boosting.  
+
+## GBM
+
+```{r GBM}
+set.seed(1)
+gbmGrid <- expand.grid(n.trees = c(1000,2000,3000),  
+                       interaction.depth = c(2, 5, 15),
+                       ## valeurs fixée  : 
+                       shrinkage = c(0.01),
+                       m.minobsinnode = c(1))
+fit.Gboost1<- train(y~.,
+                  data=training_set,
+                  method="gbm",
+                  metric=metric,
+                  trControl = trainctrl,
+                  tuneGrid=gbmGrid)
+
+print(fit.Gboost1)
+print(confusionMatrix(test_set$target,predict(fit.Gboost1,test_set),mode = "prec_recall")
+)
+```
+n.trees : Similaire au nrounds du XGB (nombre d'itération)  
+interaction_depth : Similaire au max_depth du XGB  
+shrinkage : Similaire à eta (learning rate)  
+m.minobsinnode : Similaire à min_child_weight  
+
+On note que notre algorithme se comporte mieux pour n.trees = 2500 et interaction_depth = 5, on procède donc à un zoom sur ces valeurs
+
+```{r GBM2}
+set.seed(1)
+gbmGrid <- expand.grid(n.trees = c(1500,2500),  
+                       interaction.depth = c(4,5,6),
+                       ## valeurs fixée  : 
+                       shrinkage = c(0.01),
+                       m.minobsinnode = c(1))
+fit.Gboost2<- train(y~.,
+                  data=training_set,
+                  method="gbm",
+                  metric=metric,
+                  trControl = trainctrl,
+tuneGrid=gbmGrid)
+print(fit.Gboost2)
+print(confusionMatrix(test_set$target,predict(fit.Gboost2,test_set),mode = "prec_recall")
+)
+```
+
+On arretera donc nos paramètres sur : n.trees = 2500 et interaction_depth = 5.
+
+# Evaluation
+
+De manière à pouvoir comparer nos trois modèles, nous allons les évaluer sur le test set.
+
+Pour ce faire, nous construisons le graphique suivant :
+
+```{r Comparaison}
+models=list(forest1=fit.forest1,
+            forest2=fit.forest2,
+            Xboost=fit.Xboost,
+            Gboost1=fit.Gboost1,
+            fit.Gboost1=fit.Gboost1)
+results <- resamples(models)
+summary(results)
+dotplot(results)
+
+```
+
+Nous n'avons pu soumettre que les données traitées par la random forest avec mtry=3
+
+```{r Dépot}
+test=read.csv("test.csv")
+test=preProcessing(test)
+colnames(test)
+predictions=predict(fit.forest,newdata = test)
+print(predictions)
+to_be_submitted = data.frame(id=rownames(test), y=predictions)
+write.csv(to_be_submitted , file = "to_be_submitted.csv", row.names = F)
+
+```
+
+
+
+[1] *An Up-to-Date Comparison of State-of-the-Art Classification Algorithms*, Zang et al, 2017
